@@ -41,7 +41,7 @@ __license__ = "MIT"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 APP_NAME = "scrawl"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 DEFAULT_PEN_COLOR = "#ff3b30"
 DEFAULT_PEN_SIZE = 4.0
@@ -702,10 +702,10 @@ class ScrawlDaemon:
         self.server: Optional[socket.socket] = None
         self.server_thread: Optional[threading.Thread] = None
         self.lock_fd: Optional[int] = None
-        self.pending_bbox: Optional[tuple[float, float, float, float]] = None
-        self.repaint_source: Optional[int] = None
         self.top_timer: Optional[int] = None
         self.desktop_timer: Optional[int] = None
+        self.desktop_proc: Optional[subprocess.Popen[str]] = None
+        self.desktop_watch: Optional[int] = None
         self.desktop: Optional[int] = _query_current_desktop()
         self.current_desktop: Optional[int] = self.desktop
         self.workspace_hidden = False
@@ -725,7 +725,7 @@ class ScrawlDaemon:
         # Override-redirect windows are not managed by the window manager, so
         # they are visible on every xmonad workspace. Watch _NET_CURRENT_DESKTOP
         # and unmap the overlay when the user switches away.
-        self.desktop_timer = self.GLib.timeout_add(600, self._check_desktop)
+        self._start_desktop_watch()
         self._install_signal_handlers()
         atexit.register(self._cleanup_files)
         self.screen.connect("size-changed", self._on_screen_size_changed)
@@ -821,11 +821,82 @@ class ScrawlDaemon:
 
     def _adopt_current_desktop(self) -> None:
         """Bind the overlay to the workspace the user is looking at now."""
-        desktop = _query_current_desktop()
+        desktop = self.current_desktop
+        if desktop is None:
+            desktop = _query_current_desktop()
         if desktop is None:
             return
         self.desktop = desktop
         self.current_desktop = desktop
+
+    def _start_desktop_watch(self) -> None:
+        """Watch _NET_CURRENT_DESKTOP without blocking the GTK main loop.
+
+        `xprop -spy` prints the current value once and then again on every
+        change, which is cheaper and more responsive than spawning a subprocess
+        from a timeout. The timeout is only used when xprop is unavailable.
+        """
+        try:
+            proc = subprocess.Popen(
+                ["xprop", "-root", "-spy", "_NET_CURRENT_DESKTOP"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except OSError:
+            proc = None
+
+        if proc is not None and proc.stdout is not None:
+            self.desktop_proc = proc
+            try:
+                self.desktop_watch = self.GLib.io_add_watch(
+                    proc.stdout.fileno(),
+                    self.GLib.PRIORITY_DEFAULT,
+                    self.GLib.IOCondition.IN | self.GLib.IOCondition.HUP,
+                    self._on_desktop_output,
+                )
+                return
+            except Exception:
+                self._stop_desktop_watch()
+
+        self.desktop_timer = self.GLib.timeout_add(600, self._check_desktop)
+
+    def _stop_desktop_watch(self) -> None:
+        if self.desktop_watch is not None:
+            try:
+                self.GLib.source_remove(self.desktop_watch)
+            except Exception:
+                pass
+            self.desktop_watch = None
+        if self.desktop_proc is not None:
+            try:
+                self.desktop_proc.terminate()
+                self.desktop_proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    self.desktop_proc.kill()
+                except Exception:
+                    pass
+            self.desktop_proc = None
+
+    def _on_desktop_output(self, _fd: int, _condition) -> bool:
+        proc = self.desktop_proc
+        if proc is None or proc.stdout is None:
+            self.desktop_watch = None
+            return False
+        line = proc.stdout.readline()
+        if not line:
+            # xprop exited; the source is removed by returning False. Fall
+            # back to polling so workspace tracking keeps working.
+            self.desktop_watch = None
+            if not self.shutting_down and self.desktop_timer is None:
+                self.desktop_timer = self.GLib.timeout_add(600, self._check_desktop)
+            return False
+        match = re.search(r"=\s*(\d+)", line)
+        if match:
+            self._apply_desktop(int(match.group(1)))
+        return True
 
     def _check_desktop(self) -> bool:
         if self.shutting_down:
@@ -833,11 +904,17 @@ class ScrawlDaemon:
         current = _query_current_desktop()
         if current is None:
             return True
+        self._apply_desktop(current)
+        return True
+
+    def _apply_desktop(self, current: int) -> None:
+        if self.shutting_down:
+            return
         self.current_desktop = current
 
         if self.desktop is None:
             self.desktop = current
-            return True
+            return
 
         if current != self.desktop:
             if not self.workspace_hidden:
@@ -860,7 +937,6 @@ class ScrawlDaemon:
                 except Exception:
                     pass
             self._log(f"workspace {self.desktop} active; overlay shown")
-        return True
 
     def _ensure_visible(self) -> None:
         self._adopt_current_desktop()
@@ -879,7 +955,14 @@ class ScrawlDaemon:
     def _keep_on_top(self) -> bool:
         if self.shutting_down:
             return False
-        if self.visible and not self.workspace_hidden and self.gdkwin is not None:
+        # An interactive mode has just raised the window and holds the pointer
+        # grab, so re-raising it during drawing would only disturb frames.
+        if (
+            self.mode is None
+            and self.visible
+            and not self.workspace_hidden
+            and self.gdkwin is not None
+        ):
             try:
                 self.gdkwin.raise_()
             except Exception:
@@ -1247,38 +1330,16 @@ class ScrawlDaemon:
         self._queue_region(clamped)
 
     def _schedule_region(self, bbox: tuple[float, float, float, float]) -> None:
-        clamped = self._clamp_bbox(bbox)
-        if clamped is None:
-            return
-        if self.pending_bbox is None:
-            self.pending_bbox = clamped
-        else:
-            px0, py0, px1, py1 = self.pending_bbox
-            self.pending_bbox = (
-                min(px0, clamped[0]),
-                min(py0, clamped[1]),
-                max(px1, clamped[2]),
-                max(py1, clamped[3]),
-            )
-        if self.repaint_source is None:
-            self.repaint_source = self.GLib.idle_add(self._flush_pending)
+        """Paint a dirty region immediately.
 
-    def _flush_pending(self) -> bool:
-        self.repaint_source = None
-        bbox = self.pending_bbox
-        self.pending_bbox = None
-        if bbox is not None:
-            self._repaint_region(bbox)
-        return False
+        Repainting here instead of from an idle callback keeps the stroke
+        under the cursor even when pointer events arrive faster than the main
+        loop can drain them. Cairo and GTK merge the queued draw areas, so a
+        burst of motion events still composites at the display refresh rate.
+        """
+        self._repaint_region(bbox)
 
     def _full_repaint(self) -> None:
-        if self.repaint_source is not None:
-            try:
-                self.GLib.source_remove(self.repaint_source)
-            except Exception:
-                pass
-            self.repaint_source = None
-        self.pending_bbox = None
         self._clear_surface()
         for item in self.items:
             self._render_item(self.cr, item)
@@ -1578,19 +1639,16 @@ class ScrawlDaemon:
                 last_x, last_y = stroke.points[-1]
                 if math.hypot(x - last_x, y - last_y) < 0.5:
                     return True
-            before = stroke.bbox
-            stroke.add_point(x, y)
-            after = stroke.bbox
-            if before is None:
-                dirty = after
             else:
-                dirty = (
-                    min(before[0], after[0]),
-                    min(before[1], after[1]),
-                    max(before[2], after[2]),
-                    max(before[3], after[3]),
-                )
-            self._schedule_region(dirty or after or (x, y, x, y))
+                last_x, last_y = x, y
+            stroke.add_point(x, y)
+            # Repaint only the area covered by the new segment. Replaying the
+            # whole stroke inside the clip keeps translucent strokes even and
+            # keeps the dirty region small, so long strokes do not get slower
+            # as more points accumulate.
+            self._schedule_region(
+                self._segment_bbox((last_x, last_y), (x, y), stroke.width)
+            )
             return True
 
         return False
@@ -1939,6 +1997,7 @@ class ScrawlDaemon:
             except Exception:
                 pass
             self.desktop_timer = None
+        self._stop_desktop_watch()
         try:
             self._end_mode(reason)
         except Exception:

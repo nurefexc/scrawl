@@ -12,7 +12,7 @@ command that talks to a small background daemon over a Unix socket.
 
 - Author: nurefexc
 - License: MIT
-- Version: 1.2.0
+- Version: 1.2.1
 
 ## Features
 
@@ -319,7 +319,7 @@ built-in starting values.
 ## Workspaces
 
 The overlay is an override-redirect window, so the window manager does not
-move it between workspaces. scrawl polls `_NET_CURRENT_DESKTOP` and binds the
+move it between workspaces. scrawl watches `_NET_CURRENT_DESKTOP` and binds the
 overlay to the workspace where drawing starts:
 
 - starting a mode, or running `scrawl show`, adopts the current workspace
@@ -328,9 +328,11 @@ overlay to the workspace where drawing starts:
 - switching away during a mode ends the mode before hiding the overlay
 
 `scrawl status` reports the bound desktop, the current desktop, and whether the
-overlay is hidden by a workspace switch. If neither `xdotool` nor `xprop` is
-available, workspace tracking is disabled and the overlay stays visible
-everywhere.
+overlay is hidden by a workspace switch. The workspace change is read through
+a persistent `xprop -root -spy` process, so it does not block the drawing main
+loop. If `xprop` is unavailable, scrawl falls back to polling with `xdotool`
+or `xprop`. If neither is available, workspace tracking is disabled and the
+overlay stays visible everywhere.
 
 ## Window manager integration
 
