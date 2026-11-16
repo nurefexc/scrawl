@@ -1,0 +1,14 @@
+{
+  "hairline": 2,
+  "thin": 4,
+  "normal": 8,
+  "bold": 16,
+  "marker": 24,
+  "eraser": 30,
+  "eraser-large": 60,
+  "eraser-xl": 100,
+  "text-small": 20,
+  "text": 32,
+  "text-large": 48,
+  "text-xl": 72
+}

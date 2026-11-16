@@ -1,0 +1,20 @@
+{
+  "pen": [
+    "hairline",
+    "thin",
+    "normal",
+    "bold",
+    "marker"
+  ],
+  "eraser": [
+    "eraser",
+    "eraser-large",
+    "eraser-xl"
+  ],
+  "text": [
+    "text-small",
+    "text",
+    "text-large",
+    "text-xl"
+  ]
+}

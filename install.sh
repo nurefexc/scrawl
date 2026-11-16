@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Install scrawl into a project-local virtual environment, create a launcher
-# in ~/.local/bin, and make sure the split config files exist. Re-run this
-# script after moving the project.
+# in ~/.local/bin, and seed the split config files from the tracked config/
+# directory. Re-run this script after moving the project.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +20,7 @@ echo "Creating venv in $HERE/.venv ..."
 "$PYTHON" -m venv --system-site-packages "$HERE/.venv"
 "$HERE/.venv/bin/python" -m pip install --quiet --upgrade pip
 "$HERE/.venv/bin/python" -m pip install --quiet pycairo
+"$HERE/.venv/bin/python" -m compileall -q "$HERE/scrawl" "$HERE/scrawl.py"
 
 chmod +x "$HERE/scrawl.py"
 mkdir -p "$HOME/.local/bin"
@@ -33,11 +34,12 @@ EOF
 chmod +x "$HOME/.local/bin/scrawl"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/scrawl"
-echo "Ensuring config files in $CONFIG_DIR ..."
+echo "Seeding config files in $CONFIG_DIR from $HERE/config ..."
 "$HOME/.local/bin/scrawl" config --init
 
 echo
 echo "Installed:"
+echo "  package:  $HERE/scrawl"
 echo "  program:  $HERE/scrawl.py"
 echo "  venv:     $HERE/.venv"
 echo "  launcher: $HOME/.local/bin/scrawl"

@@ -12,7 +12,7 @@ command that talks to a small background daemon over a Unix socket.
 
 - Author: nurefexc
 - License: MIT
-- Version: 1.2.1
+- Version: 1.3.0
 
 ## Features
 
@@ -57,7 +57,8 @@ cd /path/to/scrawl
 
 The installer creates a project-local virtual environment with access to the
 system GTK bindings, installs `pycairo`, writes the `scrawl` launcher to
-`~/.local/bin`, and creates the split configuration files if they are missing.
+`~/.local/bin`, and seeds the split configuration files from the tracked
+`config/` directory when they are missing.
 
 Make sure `~/.local/bin` is in `PATH`. If the project directory moves, run
 `./install.sh` again so the launcher points at the new location.
@@ -68,8 +69,8 @@ Running from the source tree is also supported:
 ./scrawl.py --help
 ```
 
-The script re-executes itself with `.venv/bin/python` when `pycairo` is not
-available in the current interpreter.
+The entry point re-executes itself with `.venv/bin/python` when `pycairo` is
+not available in the current interpreter.
 
 ## Quick start
 
@@ -172,8 +173,9 @@ Boolean values accept `on`/`off`, `true`/`false`, `yes`/`no`, and `1`/`0`.
 
 ## Configuration
 
-Configuration is split by purpose. The files live in
-`${XDG_CONFIG_HOME:-~/.config}/scrawl/`:
+Configuration is split by purpose. The default aliases are tracked in the
+project's `config/` directory and copied into
+`${XDG_CONFIG_HOME:-~/.config}/scrawl/` by `scrawl config --init`:
 
 | File | Contents |
 | --- | --- |
@@ -181,7 +183,9 @@ Configuration is split by purpose. The files live in
 | `sizes.json` | Size aliases: alias to a positive pixel value. |
 | `groups.json` | Ordered alias groups for the pen, eraser and text pickers. |
 
-Current selections are stored separately in
+If the tracked files are unavailable (for example, an incomplete installation),
+the aliases compiled into `scrawl/defaults.py` remain the fallback. Current
+selections are stored separately in
 `${XDG_STATE_HOME:-~/.local/state}/scrawl/settings.json`. That file is written
 by `scrawl set` and by explicit `--color`, `--size` and `--font` arguments.
 
@@ -196,7 +200,7 @@ files:
 
 To change the current values, use `scrawl set`; this writes
 `settings.json`. To change the compiled-in starting values, edit the constants
-in `scrawl.py` before installing.
+in `scrawl/defaults.py` before installing.
 
 ### `colors.json`
 
@@ -272,11 +276,12 @@ A group alias that is not present in `sizes.json` is ignored by
 scrawl config --init
 ```
 
-This creates any missing split file from the built-in aliases. If an older
-single-file `config.json` exists, its colour, size and group entries are
-merged with any existing split files and written there, and the old file is
-renamed to `config.json.legacy`. Without a legacy file, existing split files
-are left untouched.
+This creates any missing split file from the project's tracked `config/`
+files, falling back to the built-in aliases. If an older single-file
+`config.json` exists, its colour, size and group entries are merged with any
+existing split files and written there, and the old file is renamed to
+`config.json.legacy`. Without a legacy file, existing split files are left
+untouched.
 
 Inspect the result:
 
@@ -406,11 +411,28 @@ during a mode, the mode is closed instead of leaving input captured.
 
 ## Architecture
 
-scrawl consists of two parts:
+scrawl is a Python package with a thin executable entry point:
 
 - `scrawl.py daemon` keeps the GTK window and the drawing model alive.
-- `scrawl` (the same script with a different subcommand) is a thin client that
-  sends one JSON command over a Unix socket.
+- `scrawl` (the same entry point with a different subcommand) is a thin client
+  that sends one JSON command over a Unix socket.
+
+The package separates each responsibility into its own module:
+
+| Module | Responsibility |
+| --- | --- |
+| `scrawl/cli.py` | Argument parsing and the client-side commands. |
+| `scrawl/daemon.py` | Daemon lifecycle, modes, drawing state and commands. |
+| `scrawl/overlay.py` | GTK3 override-redirect window and X11 input handling. |
+| `scrawl/renderer.py` | Cairo surface, strokes, text and eraser decorations. |
+| `scrawl/model.py` | Ordered drawing model: strokes, text items and undo. |
+| `scrawl/workspace.py` | Binds the overlay to one workspace and tracks switches. |
+| `scrawl/config.py` | Split config files, persisted settings and value lookup. |
+| `scrawl/ipc.py` | Unix-socket client and single-instance server. |
+| `scrawl/paths.py` | XDG runtime, state and configuration paths. |
+| `scrawl/defaults.py` | Built-in defaults and the config schema. |
+| `scrawl/colour.py` | Colour parsing and resolved colour values. |
+| `scrawl/runtime.py` | Virtual-environment bootstrap and daemon command. |
 
 The daemon is single-instance per X display, protected by a lock file. The
 socket is created with mode `0600` under `$XDG_RUNTIME_DIR/scrawl/` or a
@@ -428,7 +450,23 @@ alpha from the surface rather than painting over it.
 Project files:
 
 ```text
-scrawl.py        CLI, daemon and drawing model
+scrawl.py        thin executable entry point
+scrawl/          application package
+  __init__.py    package metadata and shared constants
+  __main__.py    python -m scrawl entry point
+  paths.py       XDG paths and private runtime directories
+  defaults.py    built-in defaults and config schema
+  runtime.py     virtual-environment bootstrap and daemon command
+  colour.py      colour parsing and resolved colour values
+  model.py       strokes, text items and the drawing model
+  renderer.py    cairo surface and painting
+  overlay.py     GTK3 overlay window and X11 input handling
+  workspace.py   workspace tracking
+  ipc.py         Unix-socket client and server
+  config.py      config files, settings and value resolution
+  daemon.py      daemon lifecycle and command handling
+  cli.py         argument parsing and client commands
+config/          tracked default colour, size and group files
 install.sh       virtual environment, launcher and config installer
 LICENSE          MIT license
 AUTHORS          project author
@@ -488,14 +526,22 @@ Run the source tree directly:
 ./scrawl.py pen
 ```
 
-After changing `scrawl.py`, check that it compiles and exercise the main
-commands:
+`python -m scrawl` behaves like `scrawl.py`, which is convenient when testing
+the package without the launcher:
 
 ```sh
-.venv/bin/python -m py_compile scrawl.py
-scrawl config --init
-scrawl current --tsv
-scrawl pen
+.venv/bin/python -m scrawl --version
+.venv/bin/python -m scrawl current --tsv
+```
+
+After changing the source, check that the whole package compiles and exercise
+the main commands:
+
+```sh
+.venv/bin/python -m compileall -q scrawl scrawl.py
+.venv/bin/python -m scrawl config --init
+.venv/bin/python -m scrawl current --tsv
+.venv/bin/python -m scrawl pen
 ```
 
 The daemon can be run in the foreground to see startup errors:
@@ -503,6 +549,11 @@ The daemon can be run in the foreground to see startup errors:
 ```sh
 ./scrawl.py daemon
 ```
+
+The tracked `config/` files are the source for new installations. Keep them in
+sync with `scrawl/defaults.py` when you add or rename an alias, then run
+`scrawl config --init` against a temporary `XDG_CONFIG_HOME` to verify the
+seeding path.
 
 ## License
 
