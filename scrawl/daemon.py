@@ -682,10 +682,44 @@ class ScrawlDaemon:
                 self._insert_text(text)
             return True
 
+        if (
+            self.mode in ("pen", "eraser")
+            and self.params.get("exit_on_any_key", True)
+            and not self._is_modifier_key(keyval)
+        ):
+            self._end_mode("key")
+            return True
+
         if keyval in (Gdk.KEY_Escape, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self._end_mode("key")
             return True
         return False
+
+    def _is_modifier_key(self, keyval: int) -> bool:
+        """Return True for modifier and lock keys.
+
+        Any-key exit must wait for the non-modifier key, otherwise the
+        Control_L press of Ctrl+Z would end the mode before the undo shortcut
+        can be recognised.
+        """
+        Gdk = self.Gdk
+        return keyval in (
+            Gdk.KEY_Shift_L,
+            Gdk.KEY_Shift_R,
+            Gdk.KEY_Control_L,
+            Gdk.KEY_Control_R,
+            Gdk.KEY_Alt_L,
+            Gdk.KEY_Alt_R,
+            Gdk.KEY_Super_L,
+            Gdk.KEY_Super_R,
+            Gdk.KEY_Meta_L,
+            Gdk.KEY_Meta_R,
+            Gdk.KEY_Hyper_L,
+            Gdk.KEY_Hyper_R,
+            Gdk.KEY_Caps_Lock,
+            Gdk.KEY_Shift_Lock,
+            Gdk.KEY_Num_Lock,
+        )
 
     def _on_window_destroy(self, _widget) -> None:
         if not self.shutting_down:
@@ -756,6 +790,9 @@ class ScrawlDaemon:
                         float(value) for value in cmd.get("color", [1, 0, 0, 1])
                     ),
                     "size": float(cmd.get("size", DEFAULT_PEN_SIZE)),
+                    "exit_on_any_key": bool(
+                        cmd.get("exit_on_any_key", True)
+                    ),
                 }
                 self._set_mode(action, params, client)
 

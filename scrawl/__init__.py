@@ -18,7 +18,7 @@ __copyright__ = "Copyright (c) 2026 nurefexc"
 __license__ = "MIT"
 
 APP_NAME = "scrawl"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 MAX_COMMAND_BYTES = 1024 * 1024
 SOCKET_START_TIMEOUT = 4.0

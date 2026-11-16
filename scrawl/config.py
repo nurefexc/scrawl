@@ -87,6 +87,19 @@ def merge_config_section(
             config[section][str(group)] = list(aliases)
         return
 
+    if section == "behavior":
+        for key, value in data.items():
+            if key != "exit_on_any_key":
+                raise RuntimeError(
+                    f"invalid behavior in {path}: unknown key {key!r}"
+                )
+            if not isinstance(value, bool):
+                raise RuntimeError(
+                    f"invalid behavior in {path}: {key!r} must be true or false"
+                )
+            config[section][key] = value
+        return
+
     raise RuntimeError(f"unknown config section: {section!r}")
 
 
@@ -119,11 +132,19 @@ class Config:
     def groups(self) -> dict[str, Any]:
         return self.data.get("groups", {})
 
+    @property
+    def behavior(self) -> dict[str, Any]:
+        return self.data.get("behavior", {})
+
+    @property
+    def exit_on_any_key(self) -> bool:
+        return bool(self.behavior.get("exit_on_any_key", True))
+
     def load(self) -> dict[str, Any]:
         """Load split config files over the built-in defaults.
 
-        Only colours, sizes and groups are read from disk. Starting values are
-        built into the program, and the current selection lives in
+        Colours, sizes, groups and behaviour are read from disk. Starting
+        values are built into the program, and the current selection lives in
         settings.json.
         """
         config = json_copy(DEFAULT_CONFIG)
@@ -148,6 +169,15 @@ class Config:
 
         self.data = config
         return config
+
+    def set_behavior(self, key: str, value: bool) -> None:
+        """Update one behaviour option and write behavior.json."""
+        if key not in DEFAULT_CONFIG["behavior"]:
+            raise ValueError(f"unknown behavior option: {key!r}")
+        if not isinstance(value, bool):
+            raise ValueError(f"behavior option {key!r} must be true or false")
+        self.data.setdefault("behavior", {})[key] = value
+        write_json(self.paths.config_path("behavior"), self.data["behavior"])
 
     def init(self) -> list[str]:
         """Create the split config files, migrating a legacy config.json."""

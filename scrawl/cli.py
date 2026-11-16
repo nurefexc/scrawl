@@ -33,6 +33,15 @@ def parse_point(text: str) -> tuple[float, float]:
         )
 
 
+def parse_boolean(value: str, what: str) -> bool:
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    raise RuntimeError(f"expected a boolean for {what}, got {value!r}")
+
+
 class Cli:
     def __init__(self, paths: Optional[RuntimePaths] = None) -> None:
         self.paths = paths or RuntimePaths()
@@ -201,6 +210,13 @@ class Cli:
 
     def cmd_set(self, args: argparse.Namespace) -> int:
         config, settings = self._load()
+
+        if args.what == "exit-on-any-key":
+            value = parse_boolean(args.value, args.what)
+            config.set_behavior("exit_on_any_key", value)
+            print(f"{args.what}: {'on' if value else 'off'}")
+            return 0
+
         tool, field = SET_FIELDS[args.what]
         value = args.value
 
@@ -209,15 +225,7 @@ class Cli:
         elif field == "size":
             config.resolve_size(value)
         elif field in ("bold", "italic"):
-            normalized = str(value).strip().lower()
-            if normalized in ("1", "true", "yes", "on"):
-                value = True
-            elif normalized in ("0", "false", "no", "off"):
-                value = False
-            else:
-                raise RuntimeError(
-                    f"expected a boolean for {args.what}, got {value!r}"
-                )
+            value = parse_boolean(value, args.what)
         elif field == "font":
             if not str(value).strip():
                 raise RuntimeError("font must not be empty")
@@ -313,6 +321,10 @@ class Cli:
         print(f"default pen: {pen.get('color')} / {pen.get('size')} (built in)")
         print(f"default eraser: {eraser.get('size')} (built in)")
         print(f"default text: {text.get('color')} / {text.get('size')} (built in)")
+        print(
+            "exit on any key: "
+            f"{'on' if config.exit_on_any_key else 'off'} (pen and eraser)"
+        )
         print(f"current settings: {self.paths.settings_path()}")
         return 0
 
@@ -363,6 +375,7 @@ class Cli:
         command: dict[str, Any] = {
             "cmd": tool,
             "size": values["size"],
+            "exit_on_any_key": config.exit_on_any_key,
         }
         if not eraser:
             command["color"] = [
@@ -370,11 +383,16 @@ class Cli:
             ]
 
         if sys.stderr.isatty():
+            exit_hint = (
+                "any key"
+                if config.exit_on_any_key
+                else "Esc / Enter"
+            )
             if eraser:
                 print(
                     f"{APP_NAME}: erasing with {values['size_name']} "
                     f"({values['size_px']:g} px) - drag with the left mouse "
-                    "button; exit: Esc / Enter / right-click",
+                    f"button; exit: {exit_hint} / right-click",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -383,7 +401,7 @@ class Cli:
                     f"{APP_NAME}: drawing with {values['color_name']} "
                     f"({values['color_hex']}) at {values['size_name']} "
                     f"({values['size_px']:g} px) - drag with the left mouse "
-                    "button; exit: Esc / Enter / right-click",
+                    f"button; exit: {exit_hint} / right-click",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -461,8 +479,8 @@ class Cli:
             prog=APP_NAME,
             description=(
                 "Click-through screen annotation overlay controlled entirely "
-                "from the command line. Interactive modes exit with Esc, Enter "
-                "or a right-click."
+                "from the command line. Pen and eraser modes exit on any key by "
+                "default; every mode also exits with Esc, Enter or a right-click."
             ),
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog=(
@@ -472,6 +490,7 @@ class Cli:
                 "  scrawl pen --color '#00ff9d' --size 12\n"
                 "  scrawl set pen-color blue        # switch and remember\n"
                 "  scrawl set pen-size normal\n"
+                "  scrawl set exit-on-any-key off   # Esc/Enter exits only\n"
                 "  scrawl eraser                    # current eraser size\n"
                 "  scrawl text --at 100,100 --size text-large 'Hello world'\n"
                 "  scrawl current --tsv\n"
@@ -491,7 +510,8 @@ class Cli:
             help="interactive pen mode (drag with the left button)",
             description=(
                 "Interactive pen mode. Drag with the left mouse button to "
-                "draw. Esc, Enter or right-click exits."
+                "draw. By default any key exits; set exit-on-any-key off for "
+                "Esc/Enter only. Right-click also exits."
             ),
         )
         pen.add_argument(
@@ -519,7 +539,8 @@ class Cli:
             help="interactive eraser mode (drag with the left button)",
             description=(
                 "Interactive eraser mode. The ring under the cursor shows the "
-                "eraser diameter. Esc, Enter or right-click exits."
+                "eraser diameter. By default any key exits; set "
+                "exit-on-any-key off for Esc/Enter only. Right-click also exits."
             ),
         )
         eraser.add_argument(
@@ -637,7 +658,8 @@ class Cli:
             description=(
                 "Switch a setting and remember it. Values may be aliases from "
                 "the JSON config or raw values: colours accept #rrggbb / GTK "
-                "names, sizes accept pixels."
+                "names, sizes accept pixels. exit-on-any-key is written to "
+                "behavior.json; the other settings are written to settings.json."
             ),
         )
         set_parser.add_argument(

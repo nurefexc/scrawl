@@ -58,6 +58,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "eraser": ["eraser", "eraser-large", "eraser-xl"],
         "text": ["text-small", "text", "text-large", "text-xl"],
     },
+    "behavior": {
+        "exit_on_any_key": True,
+    },
     "defaults": {
         "pen": {"color": "red", "size": "thin"},
         "eraser": {"size": "eraser"},
@@ -76,12 +79,14 @@ SET_FIELDS = {
     "text-font": ("text", "font"),
     "text-bold": ("text", "bold"),
     "text-italic": ("text", "italic"),
+    "exit-on-any-key": ("behavior", "exit_on_any_key"),
 }
 
-CONFIG_SECTIONS = ("colors", "sizes", "groups")
+CONFIG_SECTIONS = ("colors", "sizes", "groups", "behavior")
 CONFIG_FILENAMES = {
     "colors": "colors.json",
     "sizes": "sizes.json",
     "groups": "groups.json",
+    "behavior": "behavior.json",
 }
 LEGACY_CONFIG_FILENAME = "config.json"

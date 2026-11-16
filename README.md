@@ -12,7 +12,7 @@ command that talks to a small background daemon over a Unix socket.
 
 - Author: nurefexc
 - License: MIT
-- Version: 1.3.0
+- Version: 1.4.0
 
 ## Features
 
@@ -23,6 +23,7 @@ command that talks to a small background daemon over a Unix socket.
 - Colour and size aliases loaded from JSON files
 - Raw hex/RGB colours and pixel sizes still accepted on the command line
 - Persistent current tool settings, so colour and size are switched once
+- Pen and eraser modes exit on any key by default, with an Esc/Enter-only switch
 - Workspace-aware overlay: annotations stay on the workspace where they started
 - `clear`, `undo`, `hide`, `show` and `toggle`
 - Persistent daemon; annotations survive between commands
@@ -78,9 +79,10 @@ not available in the current interpreter.
 scrawl pen
 ```
 
-Drag with the left mouse button to draw. Press `Esc`, `Enter`, or right-click
-to stop drawing. The drawing stays on screen and the overlay becomes
-click-through again.
+Drag with the left mouse button to draw. By default any key press stops
+drawing; `Esc`, `Enter` and right-click work as well. Set the switch below to
+restore Esc/Enter-only exits. The drawing stays on screen and the overlay
+becomes click-through again.
 
 Switch the pen colour and width, then keep drawing:
 
@@ -138,7 +140,7 @@ scrawl quit        # stop the daemon; annotations are lost
 | `scrawl eraser` / `scrawl erase` | Interactive eraser mode. Optional `--size`. |
 | `scrawl text` / `scrawl write` | Place text or type on screen. Optional `--at X,Y`, `--color`, `--size`, `--font`, `--bold`, `--italic`, and the text as arguments. |
 | `scrawl current [--json\|--tsv]` | Show the current pen, eraser and text settings. |
-| `scrawl set WHAT VALUE` | Switch a setting and persist it in `settings.json`. |
+| `scrawl set WHAT VALUE` | Switch a setting and persist it. Behaviour options are written to `behavior.json`; tool settings to `settings.json`. |
 | `scrawl colors [--json\|--tsv]` | List colour aliases. |
 | `scrawl sizes [GROUP] [--json\|--tsv]` | List size aliases, optionally for `pen`, `eraser` or `text`. |
 | `scrawl config [--json\|--init]` | Show the config files, or create missing files and migrate a legacy config. |
@@ -168,8 +170,11 @@ until `scrawl quit`, logout, or a signal.
 | `text-font` | Font family |
 | `text-bold` | Bold on/off |
 | `text-italic` | Italic on/off |
+| `exit-on-any-key` | Pen/eraser exit on any key (`on`) or Esc/Enter only (`off`) |
 
 Boolean values accept `on`/`off`, `true`/`false`, `yes`/`no`, and `1`/`0`.
+`exit-on-any-key` changes `behavior.json`; every other name changes
+`settings.json`.
 
 ## Configuration
 
@@ -182,12 +187,14 @@ project's `config/` directory and copied into
 | `colors.json` | Colour aliases: alias to any GTK/CSS colour string. |
 | `sizes.json` | Size aliases: alias to a positive pixel value. |
 | `groups.json` | Ordered alias groups for the pen, eraser and text pickers. |
+| `behavior.json` | Interaction switches, currently `exit_on_any_key`. |
 
 If the tracked files are unavailable (for example, an incomplete installation),
-the aliases compiled into `scrawl/defaults.py` remain the fallback. Current
+the defaults compiled into `scrawl/defaults.py` remain the fallback. Current
 selections are stored separately in
 `${XDG_STATE_HOME:-~/.local/state}/scrawl/settings.json`. That file is written
 by `scrawl set` and by explicit `--color`, `--size` and `--font` arguments.
+`exit-on-any-key` is written to `behavior.json` instead.
 
 Starting values are built into the program and are not read from the config
 files:
@@ -200,7 +207,8 @@ files:
 
 To change the current values, use `scrawl set`; this writes
 `settings.json`. To change the compiled-in starting values, edit the constants
-in `scrawl/defaults.py` before installing.
+in `scrawl/defaults.py` before installing. Behaviour switches live in
+`behavior.json` and are described below.
 
 ### `colors.json`
 
@@ -270,6 +278,29 @@ list of size aliases:
 A group alias that is not present in `sizes.json` is ignored by
 `scrawl sizes GROUP`.
 
+### `behavior.json`
+
+Interaction switches are stored in their own file:
+
+```json
+{
+  "exit_on_any_key": true
+}
+```
+
+With `true` (the default), any key press exits pen and eraser modes. Set it to
+`false` to restore Esc/Enter-only exits:
+
+```sh
+scrawl set exit-on-any-key off
+scrawl set exit-on-any-key on
+```
+
+`Ctrl+Z` still undoes the most recent item instead of exiting, and modifier keys
+pressed on their own (Shift, Ctrl, Alt, Super) do not count as an exit.
+Right-click always exits. Text mode keeps its own keys and is unaffected by
+this switch.
+
 ### Creating and migrating config files
 
 ```sh
@@ -277,10 +308,10 @@ scrawl config --init
 ```
 
 This creates any missing split file from the project's tracked `config/`
-files, falling back to the built-in aliases. If an older single-file
-`config.json` exists, its colour, size and group entries are merged with any
-existing split files and written there, and the old file is renamed to
-`config.json.legacy`. Without a legacy file, existing split files are left
+files, falling back to the built-in defaults. If an older single-file
+`config.json` exists, its colour, size, group and behaviour entries are merged
+with any existing split files and written there, and the old file is renamed
+to `config.json.legacy`. Without a legacy file, existing split files are left
 untouched.
 
 Inspect the result:
@@ -319,7 +350,8 @@ missing file means the built-in aliases are used for that section.
 ```
 
 You normally do not need to edit it by hand. Delete it to return to the
-built-in starting values.
+built-in starting values. The `exit_on_any_key` switch lives in
+`behavior.json`, not in this file.
 
 ## Workspaces
 
@@ -466,7 +498,7 @@ scrawl/          application package
   config.py      config files, settings and value resolution
   daemon.py      daemon lifecycle and command handling
   cli.py         argument parsing and client commands
-config/          tracked default colour, size and group files
+config/          tracked default colour, size, group and behaviour files
 install.sh       virtual environment, launcher and config installer
 LICENSE          MIT license
 AUTHORS          project author
@@ -480,6 +512,7 @@ Runtime files:
 ~/.config/scrawl/colors.json          colour aliases
 ~/.config/scrawl/sizes.json           size aliases
 ~/.config/scrawl/groups.json          picker groups
+~/.config/scrawl/behavior.json        interaction switches
 ~/.local/state/scrawl/settings.json   current tool settings
 ~/.local/state/scrawl/daemon.log      daemon log
 $XDG_RUNTIME_DIR/scrawl/daemon_*.sock Unix socket
@@ -551,9 +584,9 @@ The daemon can be run in the foreground to see startup errors:
 ```
 
 The tracked `config/` files are the source for new installations. Keep them in
-sync with `scrawl/defaults.py` when you add or rename an alias, then run
-`scrawl config --init` against a temporary `XDG_CONFIG_HOME` to verify the
-seeding path.
+sync with `scrawl/defaults.py` when you add or rename an alias or behaviour
+option, then run `scrawl config --init` against a temporary `XDG_CONFIG_HOME`
+to verify the seeding path.
 
 ## License
 
