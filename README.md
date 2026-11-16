@@ -24,6 +24,8 @@ command that talks to a small background daemon over a Unix socket.
 - Raw hex/RGB colours and pixel sizes still accepted on the command line
 - Persistent current tool settings, so colour and size are switched once
 - Pen and eraser modes exit on any key by default, with an Esc/Enter-only switch
+- Window-manager and application shortcuts (Mod+key) still fire when they end
+  a mode
 - Workspace-aware overlay: annotations stay on the workspace where they started
 - `clear`, `undo`, `hide`, `show` and `toggle`
 - Persistent daemon; annotations survive between commands
@@ -40,6 +42,8 @@ command that talks to a small background daemon over a Unix socket.
   overlay may be drawn as an opaque or black window.
 - `xdotool` or `xprop` for workspace tracking. Both are usually present on an
   X11 desktop. Without either, the overlay stays visible on every workspace.
+- `libXtst` so modifier shortcuts can be forwarded when they exit a mode.
+  Without it, drawing and exiting still work, but the shortcut is consumed.
 
 On Arch Linux:
 
@@ -300,6 +304,14 @@ scrawl set exit-on-any-key on
 pressed on their own (Shift, Ctrl, Alt, Super) do not count as an exit.
 Right-click always exits. Text mode keeps its own keys and is unaffected by
 this switch.
+
+Modifier shortcuts are not swallowed. If the exit key is pressed with Ctrl, Alt,
+Super or Meta held, the mode ends and the press is sent to the focused window or
+the window manager, so shortcuts such as `Super+3` still switch workspaces.
+The keyboard grab is released first and the key is re-sent as a complete
+shortcut, so keys cannot stick. Plain keys and `Esc`/`Enter` only close the
+mode. Forwarding needs `libXtst`; without it the mode still ends, but the
+shortcut is lost.
 
 ### Creating and migrating config files
 

@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import atexit
+import ctypes
+import ctypes.util
 import math
 import os
 import signal
@@ -32,6 +34,16 @@ from .workspace import WorkspaceWatcher
 # GTK 3.24 deprecates a few APIs that are still the cleanest way to build a
 # full-screen ARGB overlay. Keep the daemon log readable.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+# X11 modifier masks and keysyms used when forwarding a GTK shortcut through
+# XTest. GTK masks and X11 masks are different namespaces, so the translation
+# lives next to the forwarding code.
+X11_CONTROL_MASK = 0x0004
+X11_MOD1_MASK = 0x0008
+X11_MOD4_MASK = 0x0040
+X11_KEY_CONTROL_L = 0xFFE3
+X11_KEY_ALT_L = 0xFFE9
+X11_KEY_SUPER_L = 0xFFEB
 
 
 class ScrawlDaemon:
@@ -83,6 +95,21 @@ class ScrawlDaemon:
         self.overlay: Optional[OverlayWindow] = None
         self.workspace: Optional[WorkspaceWatcher] = None
         self.loop = None
+
+        # Modifier combinations that usually belong to the window manager or
+        # to application shortcuts. Any-key exit replays these after releasing
+        # the grab so the shortcut is not lost. Keep in sync with GDK masks.
+        self.system_modifier_mask = (
+            Gdk.ModifierType.CONTROL_MASK
+            | Gdk.ModifierType.MOD1_MASK
+            | Gdk.ModifierType.MOD4_MASK
+            | Gdk.ModifierType.SUPER_MASK
+            | Gdk.ModifierType.META_MASK
+        )
+        self._x11 = None
+        self._xtst = None
+        self._xtest_display = None
+        self._xtest_failed = False
 
         # Claim the lock before creating the overlay, so a second daemon exits
         # without flashing a full-screen window.
@@ -687,13 +714,189 @@ class ScrawlDaemon:
             and self.params.get("exit_on_any_key", True)
             and not self._is_modifier_key(keyval)
         ):
+            forward = bool(state & self.system_modifier_mask)
             self._end_mode("key")
+            if forward:
+                self._forward_key(event.hardware_keycode, state)
             return True
 
         if keyval in (Gdk.KEY_Escape, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self._end_mode("key")
             return True
         return False
+
+    def _forward_key(self, keycode: int, state: int) -> None:
+        """Replay an exit shortcut to the focused window.
+
+        The keyboard grab is needed to notice the exit key, but it also hides
+        window manager shortcuts. Once the grab is released, synthesise the
+        key press again so the shortcut reaches the focused application or the
+        window manager instead of being swallowed by the exit.
+
+        The synthetic events mirror what is still physically held: a key that
+        is down is released and pressed again so the window manager sees a
+        fresh shortcut instead of auto-repeat, and the complete combination is
+        released afterwards. Nothing can remain stuck if a physical release
+        races with the forwarded press.
+        """
+        if not keycode:
+            return
+        connection = self._xtest_connection()
+        if connection is None:
+            return
+        x11, xtst, display = connection
+        try:
+            # The daemon's ungrab must reach the server before the fake event,
+            # otherwise the grab would take the forwarded key as well.
+            self.display.sync()
+            modifiers = self._modifier_keys(display, state)
+            current = self._pressed_modifiers(display)
+            missing = [
+                (mask, mod_keycode)
+                for mask, mod_keycode in modifiers
+                if not current & mask
+            ]
+            key_down = self._key_is_down(display, keycode)
+
+            for _mask, mod_keycode in missing:
+                xtst.XTestFakeKeyEvent(display, mod_keycode, True, 0)
+            if key_down:
+                # A press would look like auto-repeat while the physical key is
+                # still held. Release first, then press again so the window
+                # manager sees a fresh shortcut press.
+                xtst.XTestFakeKeyEvent(display, keycode, False, 0)
+            xtst.XTestFakeKeyEvent(display, keycode, True, 0)
+            xtst.XTestFakeKeyEvent(display, keycode, False, 0)
+            for _mask, mod_keycode in reversed(missing):
+                xtst.XTestFakeKeyEvent(display, mod_keycode, False, 0)
+            x11.XFlush(display)
+        except Exception:
+            if not self._xtest_failed:
+                self._xtest_failed = True
+                self._log(
+                    "warning: could not forward the exit key\n"
+                    + traceback.format_exc()
+                )
+
+    def _modifier_keys(self, display, state: int) -> list[tuple[int, int]]:
+        """Map the pressed GDK modifiers to X masks and keycodes."""
+        Gdk = self.Gdk
+        wanted = (
+            (
+                Gdk.ModifierType.CONTROL_MASK,
+                X11_CONTROL_MASK,
+                X11_KEY_CONTROL_L,
+            ),
+            (Gdk.ModifierType.MOD1_MASK, X11_MOD1_MASK, X11_KEY_ALT_L),
+            (Gdk.ModifierType.META_MASK, X11_MOD1_MASK, X11_KEY_ALT_L),
+            (Gdk.ModifierType.MOD4_MASK, X11_MOD4_MASK, X11_KEY_SUPER_L),
+            (Gdk.ModifierType.SUPER_MASK, X11_MOD4_MASK, X11_KEY_SUPER_L),
+        )
+        result: list[tuple[int, int]] = []
+        seen: set[int] = set()
+        for gdk_mask, x_mask, keysym in wanted:
+            if not state & gdk_mask or x_mask in seen:
+                continue
+            seen.add(x_mask)
+            keycode = self._x11.XKeysymToKeycode(display, keysym)
+            if keycode:
+                result.append((x_mask, int(keycode)))
+        return result
+
+    def _pressed_modifiers(self, display) -> int:
+        x11 = self._x11
+        root = x11.XDefaultRootWindow(display)
+        root_return = ctypes.c_ulong()
+        child_return = ctypes.c_ulong()
+        root_x = ctypes.c_int()
+        root_y = ctypes.c_int()
+        win_x = ctypes.c_int()
+        win_y = ctypes.c_int()
+        mask = ctypes.c_uint()
+        x11.XQueryPointer(
+            display,
+            root,
+            ctypes.byref(root_return),
+            ctypes.byref(child_return),
+            ctypes.byref(root_x),
+            ctypes.byref(root_y),
+            ctypes.byref(win_x),
+            ctypes.byref(win_y),
+            ctypes.byref(mask),
+        )
+        return int(mask.value)
+
+    def _key_is_down(self, display, keycode: int) -> bool:
+        keys = (ctypes.c_ubyte * 32)()
+        self._x11.XQueryKeymap(display, keys)
+        return bool(keys[keycode >> 3] & (1 << (keycode & 7)))
+
+    def _xtest_connection(self):
+        """Open a separate X connection for XTest key injection.
+
+        A separate connection keeps the GDK connection untouched. Replaying on
+        a new connection is safe because the caller syncs the GDK display
+        first, so the keyboard grab is already released on the server.
+        """
+        if self._xtest_display is not None:
+            return self._x11, self._xtst, self._xtest_display
+        if self._xtest_failed:
+            return None
+        try:
+            x11 = ctypes.CDLL(
+                ctypes.util.find_library("X11") or "libX11.so.6"
+            )
+            xtst = ctypes.CDLL(
+                ctypes.util.find_library("Xtst") or "libXtst.so.6"
+            )
+            x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+            x11.XOpenDisplay.restype = ctypes.c_void_p
+            x11.XFlush.argtypes = [ctypes.c_void_p]
+            x11.XFlush.restype = ctypes.c_int
+            x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+            x11.XCloseDisplay.restype = ctypes.c_int
+            x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+            x11.XDefaultRootWindow.restype = ctypes.c_ulong
+            x11.XQueryPointer.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+                ctypes.POINTER(ctypes.c_ulong),
+                ctypes.POINTER(ctypes.c_ulong),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            x11.XQueryPointer.restype = ctypes.c_int
+            x11.XQueryKeymap.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_ubyte),
+            ]
+            x11.XQueryKeymap.restype = ctypes.c_int
+            x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+            xtst.XTestFakeKeyEvent.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.c_int,
+                ctypes.c_ulong,
+            ]
+            xtst.XTestFakeKeyEvent.restype = ctypes.c_int
+            display = x11.XOpenDisplay(None)
+            if not display:
+                raise RuntimeError("XOpenDisplay failed")
+        except Exception:
+            self._xtest_failed = True
+            self._log(
+                "warning: exit shortcuts will not be forwarded; "
+                "libXtst is unavailable\n" + traceback.format_exc()
+            )
+            return None
+        self._x11 = x11
+        self._xtst = xtst
+        self._xtest_display = display
+        return x11, xtst, display
 
     def _is_modifier_key(self, keyval: int) -> bool:
         """Return True for modifier and lock keys.
@@ -928,6 +1131,12 @@ class ScrawlDaemon:
         server = getattr(self, "server", None)
         if server is not None:
             server.cleanup()
+        if self._xtest_display is not None and self._x11 is not None:
+            try:
+                self._x11.XCloseDisplay(self._xtest_display)
+            except Exception:
+                pass
+            self._xtest_display = None
 
     # -- main loop --------------------------------------------------------
 
