@@ -1,11 +1,10 @@
 # Copyright (c) 2026 nurefexc
 # SPDX-License-Identifier: MIT
-"""Workspace tracking for override-redirect windows.
+"""Current-workspace tracking for X11.
 
-Override-redirect windows are visible on every X11 workspace. The watcher binds
-the overlay to the workspace where drawing starts and hides it when the user
-switches away. A persistent ``xprop -spy`` process is used when available;
-otherwise it falls back to polling.
+The watcher only reports which workspace is active. A persistent
+``xprop -spy`` process is used when available; otherwise it falls back to
+polling.
 """
 
 from __future__ import annotations
@@ -14,9 +13,8 @@ import re
 import subprocess
 from typing import Callable, Optional
 
-HideCallback = Callable[[int, int], None]
-ShowCallback = Callable[[int, int], None]
-LogCallback = Callable[[str], None]
+Desktop = Optional[int]
+ChangeCallback = Callable[[Desktop, Desktop], None]
 
 
 def query_current_desktop() -> Optional[int]:
@@ -48,25 +46,18 @@ def query_current_desktop() -> Optional[int]:
 
 
 class WorkspaceWatcher:
-    """Keep the overlay bound to one workspace."""
+    """Report changes of the current workspace."""
 
     def __init__(
         self,
         glib,
         *,
-        on_hide: HideCallback,
-        on_show: ShowCallback,
-        log: LogCallback,
+        on_change: ChangeCallback,
     ) -> None:
         self.GLib = glib
-        self.on_hide = on_hide
-        self.on_show = on_show
-        self._log = log
+        self.on_change = on_change
 
-        self.bound = query_current_desktop()
-        self.current = self.bound
-        self.hidden = False
-
+        self.current: Desktop = query_current_desktop()
         self._timer: Optional[int] = None
         self._proc: Optional[subprocess.Popen[str]] = None
         self._watch: Optional[int] = None
@@ -74,19 +65,12 @@ class WorkspaceWatcher:
 
     # -- public state -----------------------------------------------------
 
-    def adopt(self) -> None:
-        """Bind the overlay to the workspace the user is looking at now."""
-        desktop = self.current
-        if desktop is None:
-            desktop = query_current_desktop()
-        if desktop is None:
-            return
-        self.bound = desktop
-        self.current = desktop
-        self.hidden = False
-
-    def clear_hidden(self) -> None:
-        self.hidden = False
+    def refresh(self) -> Desktop:
+        """Query the current workspace once and report a change immediately."""
+        current = query_current_desktop()
+        if current is not None:
+            self._apply(current)
+        return self.current
 
     # -- lifecycle --------------------------------------------------------
 
@@ -170,25 +154,12 @@ class WorkspaceWatcher:
     def _check(self) -> bool:
         if self._stopping:
             return False
-        current = query_current_desktop()
-        if current is None:
-            return True
-        self._apply(current)
+        self.refresh()
         return True
 
     def _apply(self, current: int) -> None:
-        if self._stopping:
+        if self._stopping or current == self.current:
             return
+        previous = self.current
         self.current = current
-
-        if self.bound is None:
-            self.bound = current
-            return
-
-        if current != self.bound:
-            if not self.hidden:
-                self.hidden = True
-                self.on_hide(self.bound, current)
-        elif self.hidden:
-            self.hidden = False
-            self.on_show(self.bound, current)
+        self.on_change(current, previous)

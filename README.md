@@ -26,7 +26,7 @@ command that talks to a small background daemon over a Unix socket.
 - Pen and eraser modes exit on any key by default, with an Esc/Enter-only switch
 - Window-manager and application shortcuts (Mod+key) still fire when they end
   a mode
-- Workspace-aware overlay: annotations stay on the workspace where they started
+- Separate annotations for each workspace, switched with the active workspace
 - `clear`, `undo`, `hide`, `show` and `toggle`
 - Persistent daemon; annotations survive between commands
 - JSON status output for scripts, keybindings and status bars
@@ -185,7 +185,7 @@ scrawl quit        # stop the daemon; annotations are lost
 | `scrawl hide` | Hide the overlay; annotations are kept. |
 | `scrawl show` | Show the overlay again. |
 | `scrawl toggle` | Toggle overlay visibility. |
-| `scrawl status [--json]` | Daemon status, workspace state and current settings. |
+| `scrawl status [--json]` | Daemon status, current workspace and current settings. |
 | `scrawl daemon` | Run the daemon in the foreground for debugging. |
 | `scrawl quit` | Stop the daemon and clear the annotations. |
 
@@ -400,20 +400,21 @@ built-in starting values. The `exit_on_any_key` switch lives in
 ## Workspaces
 
 The overlay is an override-redirect window, so the window manager does not
-move it between workspaces. scrawl watches `_NET_CURRENT_DESKTOP` and binds the
-overlay to the workspace where drawing starts:
+move it between workspaces. scrawl watches `_NET_CURRENT_DESKTOP` and keeps a
+separate drawing for each workspace:
 
-- starting a mode, or running `scrawl show`, adopts the current workspace
-- switching away hides the overlay and keeps the annotations
-- switching back shows the same annotations again, still click-through
-- switching away during a mode ends the mode before hiding the overlay
+- switching workspace ends the active mode and loads that workspace's drawing
+- annotations stay on their own workspace and reappear when you return to it
+- `clear` and `undo` affect only the current workspace
+- `hide`, `show` and `toggle` control the overlay on the current workspace
 
-`scrawl status` reports the bound desktop, the current desktop, and whether the
-overlay is hidden by a workspace switch. The workspace change is read through
-a persistent `xprop -root -spy` process, so it does not block the drawing main
-loop. If `xprop` is unavailable, scrawl falls back to polling with `xdotool`
-or `xprop`. If neither is available, workspace tracking is disabled and the
-overlay stays visible everywhere.
+Commands refresh the current workspace before acting, so a hotkey pressed just
+after a switch still targets the right drawing. `scrawl status` reports the
+current desktop and the item count for that desktop. Workspace changes are read
+through a persistent `xprop -root -spy` process, so tracking does not block the
+drawing main loop. If `xprop` is unavailable, scrawl falls back to polling with
+`xdotool` or `xprop`. If neither is available, all annotations share one
+fallback drawing.
 
 ## Window manager integration
 
@@ -460,7 +461,6 @@ Example fields:
   "running": true,
   "visible": true,
   "effective_visible": true,
-  "workspace_hidden": false,
   "clickthrough": true,
   "desktop": 1,
   "current_desktop": 1,
@@ -502,7 +502,8 @@ The package separates each responsibility into its own module:
 | `scrawl/overlay.py` | GTK3 override-redirect window and X11 input handling. |
 | `scrawl/renderer.py` | Cairo surface, strokes, text and eraser decorations. |
 | `scrawl/model.py` | Ordered drawing model: strokes, text items and undo. |
-| `scrawl/workspace.py` | Binds the overlay to one workspace and tracks switches. |
+| `scrawl/workspace.py` | Reports workspace switches. |
+| `scrawl/desktops.py` | Per-workspace drawing storage. |
 | `scrawl/config.py` | Split config files, persisted settings and value lookup. |
 | `scrawl/ipc.py` | Unix-socket client and single-instance server. |
 | `scrawl/paths.py` | XDG runtime, state and configuration paths. |
@@ -531,6 +532,7 @@ scrawl/          application package
   __init__.py    package metadata and shared constants
   __main__.py    python -m scrawl entry point
   paths.py       XDG paths and private runtime directories
+  desktops.py    per-workspace drawing storage
   defaults.py    built-in defaults and config schema
   runtime.py     virtual-environment bootstrap and daemon command
   colour.py      colour parsing and resolved colour values
@@ -581,8 +583,8 @@ $XDG_RUNTIME_DIR/scrawl/daemon_*.sock.pid  daemon pid
 
 - If text input ignores dead keys or an IME, use a precomposed string with
   `scrawl text --at X,Y '...'`.
-- If the overlay keeps appearing on every workspace, install `xdotool` or
-  `xprop`, or check that `_NET_CURRENT_DESKTOP` is set by the window manager.
+- If annotations appear on every workspace, install `xdotool` or `xprop`, or
+  check that `_NET_CURRENT_DESKTOP` is set by the window manager.
 - Kill a stuck instance with `scrawl quit`, or `pkill -f scrawl.py` as a last
   resort.
 

@@ -81,7 +81,6 @@ class Cli:
                 "running": False,
                 "visible": False,
                 "effective_visible": False,
-                "workspace_hidden": False,
                 "clickthrough": True,
                 "desktop": None,
                 "current_desktop": None,
@@ -117,13 +116,7 @@ class Cli:
                 f"version {response['version']})"
             )
             print(f"screen: {response['screen'][0]}x{response['screen'][1]}")
-            workspace = (
-                "hidden" if response.get("workspace_hidden") else "visible"
-            )
-            print(
-                f"desktop: {response.get('desktop')} "
-                f"(current {response.get('current_desktop')}, {workspace})"
-            )
+            print(f"desktop: {response.get('desktop')}")
             print(f"visible: {'yes' if response['visible'] else 'no'}")
             print(
                 f"click-through: "

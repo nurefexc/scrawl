@@ -24,6 +24,7 @@ from .defaults import (
     DEFAULT_PEN_SIZE,
     DEFAULT_TEXT_SIZE,
 )
+from .desktops import DesktopDrawings
 from .ipc import DaemonServer
 from .model import Drawing, Stroke, TextItem
 from .overlay import OverlayWindow
@@ -78,7 +79,7 @@ class ScrawlDaemon:
             raise RuntimeError("invalid screen size")
 
         self.renderer = Renderer(cairo, self.width, self.height)
-        self.drawing = Drawing()
+        self.drawings = DesktopDrawings()
 
         self.mode: Optional[str] = None
         self.params: dict[str, Any] = {}
@@ -111,6 +112,12 @@ class ScrawlDaemon:
         self._xtest_display = None
         self._xtest_failed = False
 
+        self.workspace = WorkspaceWatcher(
+            self.GLib,
+            on_change=self._workspace_change,
+        )
+        self.drawings.bind(self.workspace.current)
+
         # Claim the lock before creating the overlay, so a second daemon exits
         # without flashing a full-screen window.
         self.server = DaemonServer(
@@ -139,12 +146,6 @@ class ScrawlDaemon:
             self._cleanup_files()
             raise
 
-        self.workspace = WorkspaceWatcher(
-            self.GLib,
-            on_hide=self._workspace_hide,
-            on_show=self._workspace_show,
-            log=self._log,
-        )
         # An override-redirect window can be covered by windows mapped later.
         # Re-raising on a slow timer keeps annotations on top without ever
         # taking input focus.
@@ -161,16 +162,16 @@ class ScrawlDaemon:
     # -- convenience properties ------------------------------------------
 
     @property
-    def desktop(self) -> Optional[int]:
-        return self.workspace.bound if self.workspace is not None else None
+    def drawing(self) -> Drawing:
+        return self.drawings.current
 
     @property
-    def current_desktop(self) -> Optional[int]:
+    def desktop(self) -> Optional[int]:
         return self.workspace.current if self.workspace is not None else None
 
     @property
-    def workspace_hidden(self) -> bool:
-        return bool(self.workspace.hidden) if self.workspace is not None else False
+    def current_desktop(self) -> Optional[int]:
+        return self.desktop
 
     # -- logging ----------------------------------------------------------
 
@@ -183,38 +184,27 @@ class ScrawlDaemon:
 
     # -- window state -----------------------------------------------------
 
-    def _workspace_hide(self, bound: int, current: int) -> None:
+    def _workspace_change(
+        self, current: Optional[int], previous: Optional[int]
+    ) -> None:
         if self.mode is not None:
             self._end_mode("workspace-changed")
-        if self.visible and self.overlay is not None and self.overlay.gdkwin is not None:
-            self.overlay.hide()
-        self._log(f"workspace {bound} left (now {current}); overlay hidden")
-
-    def _workspace_show(self, bound: int, _current: int) -> None:
-        if (
-            self.visible
-            and self.overlay is not None
-            and self.overlay.gdkwin is not None
-        ):
+        self.drawings.bind(current)
+        self._full_repaint()
+        if self.visible and self.overlay is not None:
             self.overlay.show()
             self.overlay.set_clickthrough(self.mode is None)
-            self.overlay.queue_draw()
             self.overlay.raise_()
-        self._log(f"workspace {bound} active; overlay shown")
+        self._log(
+            f"workspace {current} active (from {previous}); drawing switched"
+        )
 
     def _ensure_visible(self) -> None:
-        if self.workspace is None or self.overlay is None:
+        if self.overlay is None:
             return
-        self.workspace.adopt()
-        if not self.visible:
-            self.visible = True
-            self.workspace.clear_hidden()
-            self.overlay.show()
-            self.overlay.set_clickthrough(self.mode is None)
-        elif self.workspace.hidden:
-            self.workspace.clear_hidden()
-            self.overlay.show()
-            self.overlay.set_clickthrough(self.mode is None)
+        self.visible = True
+        self.overlay.show()
+        self.overlay.set_clickthrough(self.mode is None)
         self.overlay.raise_()
 
     def _keep_on_top(self) -> bool:
@@ -225,7 +215,6 @@ class ScrawlDaemon:
         if (
             self.mode is None
             and self.visible
-            and not self.workspace_hidden
             and self.overlay is not None
             and self.overlay.gdkwin is not None
         ):
@@ -986,6 +975,8 @@ class ScrawlDaemon:
     def _on_command(self, cmd: dict[str, Any], client: socket.socket) -> bool:
         try:
             action = cmd.get("cmd")
+            if action != "quit" and self.workspace is not None:
+                self.workspace.refresh()
 
             if action in ("pen", "eraser"):
                 params = {
@@ -1054,9 +1045,7 @@ class ScrawlDaemon:
                         "ok": True,
                         "running": True,
                         "visible": self.visible,
-                        "effective_visible": self.visible
-                        and not self.workspace_hidden,
-                        "workspace_hidden": self.workspace_hidden,
+                        "effective_visible": self.visible,
                         "clickthrough": self.mode is None,
                         "desktop": self.desktop,
                         "current_desktop": self.current_desktop,
