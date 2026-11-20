@@ -10,7 +10,8 @@ active, then return the overlay to click-through mode.
 There is no toolbar, tray icon or settings window. Every action is a shell
 command that talks to a small background daemon over a Unix socket.
 
-- Author: nurefexc
+- Repository: https://github.com/nurefexc/scrawl
+- Author: [nurefexc](https://github.com/nurefexc)
 - License: MIT
 - Version: 1.4.0
 
